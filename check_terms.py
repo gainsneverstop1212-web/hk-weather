@@ -17,7 +17,10 @@ here = Path(__file__).resolve().parent
 page = Path(sys.argv[1]) if len(sys.argv) > 1 else here / "index.html"
 terms = json.loads((here / "terms.json").read_text(encoding="utf-8"))
 
-allowed = set(terms["hko_terms"]["terms"]) | set(terms["hko_terms"]["icon_terms"]) | set(terms["ui_general"])
+allowed = set(terms["ui_general"])
+for k, v in terms["hko_terms"].items():
+    if isinstance(v, list):
+        allowed |= set(v)
 for names in terms.get("place_names", {}).values():
     if isinstance(names, list):
         allowed |= set(names)
