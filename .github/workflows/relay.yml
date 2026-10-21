@@ -1,0 +1,77 @@
+name: HKO data relay
+
+# Every 10 minutes: download HKO open data files that browsers cannot read directly (no CORS),
+# keep only the Hong Kong area, and publish them as small JSON files on the "data" branch.
+# The app reads them from raw.githubusercontent.com, which allows cross-origin requests.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: hko-relay
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Download and convert
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          curl -fsSL --retry 3 --retry-delay 5 --max-time 90 -o nowcast.csv \
+            https://data.weather.gov.hk/weatherAPI/hko_data/F3/Gridded_rainfall_nowcast.csv
+          python3 - <<'PY'
+          import csv, json, datetime
+          W, S, E, N = 113.78, 22.10, 114.54, 22.60
+          rows = []
+          with open("nowcast.csv", newline="", encoding="utf-8-sig") as fh:
+              rd = csv.reader(fh)
+              next(rd)
+              for r in rd:
+                  if len(r) < 5:
+                      continue
+                  lat, lon = float(r[2]), float(r[3])
+                  if S <= lat <= N and W <= lon <= E:
+                      rows.append((r[0], r[1], round(lat, 4), round(lon, 4), float(r[4])))
+          if not rows:
+              raise SystemExit("no rows inside Hong Kong area")
+          updated = rows[0][0]
+          steps = sorted({r[1] for r in rows})
+          lats = sorted({r[2] for r in rows}, reverse=True)
+          lons = sorted({r[3] for r in rows})
+          li = {v: i for i, v in enumerate(lats)}
+          lo = {v: i for i, v in enumerate(lons)}
+          grid = {s: [0.0] * (len(lats) * len(lons)) for s in steps}
+          for u, s, lat, lon, v in rows:
+              grid[s][li[lat] * len(lons) + lo[lon]] = round(v, 1)
+          out = {
+              "source": "Hong Kong Observatory, Gridded rainfall nowcast",
+              "updated": updated,
+              "steps": steps,
+              "lats": lats,
+              "lons": lons,
+              "values": [grid[s] for s in steps],
+              "relayed": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+          }
+          with open("out/nowcast.json", "w", encoding="utf-8") as fh:
+              json.dump(out, fh, separators=(",", ":"))
+          print("steps", steps, "grid", len(lats), "x", len(lons), "max", max(max(g) for g in out["values"]))
+          PY
+      - name: Publish to data branch
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd out
+          git init -q -b data
+          git config user.name "hk-weather relay"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "HKO data relay $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push -qf "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" data
