@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>香港天氣</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="preconnect" href="https://data.map.gov.hk" crossorigin>
+<link rel="preconnect" href="https://mapapi.geodata.gov.hk" crossorigin>
+<link rel="preconnect" href="https://data.weather.gov.hk" crossorigin>
+<link rel="preload" href="https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/Cesium.js" as="script" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@300;500&display=swap">
+<style>
+/* Layout: harbour-observatory console. Sticky masthead, warning band, hero (current report + local forecast),
+   nine-day strip, then district temperature and rainfall side by side. */
+:root {
+  --paper: #F2F4F5;
+  --surface: #FFFFFF;
+  --ink: #0E1C2B;
+  --ink-2: #566472;
+  --ink-3: #8794A0;
+  --line: #DAE0E4;
+  --accent: #10607A;
+  --accent-soft: #E1EDF1;
+  --bar: #9FC3D0;
+  --rain: #2E6FB0;
+  --hot: #B4542A;
+  --cold: #3C78A8;
+  --display: "Noto Serif TC", "Songti TC", "PMingLiU", serif;
+  --body: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 10px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #09111A; --surface: #101A25; --ink: #E6ECF1; --ink-2: #93A1AE; --ink-3: #66737F;
+    --line: #1E2B38; --accent: #63B4CC; --accent-soft: #13303B; --bar: #2C5869; --rain: #5C9BDA;
+    --hot: #E08A5F; --cold: #74A8D6; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #09111A; --surface: #101A25; --ink: #E6ECF1; --ink-2: #93A1AE; --ink-3: #66737F;
+  --line: #1E2B38; --accent: #63B4CC; --accent-soft: #13303B; --bar: #2C5869; --rain: #5C9BDA;
+  --hot: #E08A5F; --cold: #74A8D6; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  background: var(--paper); color: var(--ink); font: 15px/1.65 var(--body);
+  -webkit-font-smoothing: antialiased;
+  padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.wrap {
+  max-width: 1180px; margin: 0 auto;
+  padding-left: max(20px, env(safe-area-inset-left, 0px));
+  padding-right: max(20px, env(safe-area-inset-right, 0px));
+}
+.num { font-family: var(--data); font-variant-numeric: tabular-nums; }
+.label { font-size: 12px; letter-spacing: .12em; color: var(--ink-2); font-weight: 500; }
+h2 { font: 500 19px/1.3 var(--display); margin: 0; letter-spacing: .02em; text-wrap: balance; }
+
+/* Masthead */
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); background: var(--surface); z-index: 10; }
+.mast { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line); }
+.mast .wrap { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block: 14px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brand svg { width: 26px; height: 26px; color: var(--accent); }
+.brand b { font: 500 20px/1 var(--display); letter-spacing: .14em; }
+.mast-right { display: flex; align-items: center; gap: 16px; color: var(--ink-2); font-size: 13px; }
+.clock { font-size: 13px; color: var(--ink); }
+.iconbtn { width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--ink); cursor: pointer; }
+.iconbtn:hover { border-color: var(--accent); color: var(--accent); }
+.iconbtn:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.iconbtn svg { width: 16px; height: 16px; }
+.iconbtn.spin svg { animation: spin .9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Warning band */
+.warnband { border-bottom: 1px solid var(--line); background: var(--surface); }
+.warnband .wrap { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding-block: 12px; }
+.chip { display: inline-flex; align-items: center; gap: 10px; padding: 6px 14px 6px 6px; border-radius: 999px; font-weight: 700; font-size: 14px; border: 1px solid var(--line); background: var(--paper); }
+.chip i { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 500 11px/1 var(--data); font-style: normal; color: #fff; background: var(--sig, var(--accent)); border: 1px solid rgba(0,0,0,.15); }
+.chip small { font: 400 12px var(--data); color: var(--ink-2); }
+details.warn-detail { width: 100%; }
+details.warn-detail summary { cursor: pointer; color: var(--accent); font-size: 13px; width: max-content; }
+.warn-text { margin-top: 10px; display: grid; gap: 10px; max-width: 75ch; color: var(--ink); }
+.warn-text p { margin: 0; }
+
+/* Hero */
+.hero { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 0; margin-block: 28px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.now { padding: 28px 30px 26px; border-right: 1px solid var(--line); display: grid; gap: 20px; align-content: start; position: relative; }
+.now-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.temp { display: flex; align-items: flex-start; gap: 4px; }
+.temp .big { font: 300 104px/0.9 var(--display); letter-spacing: -.02em; }
+.temp .unit { font: 300 30px/1 var(--display); color: var(--ink-2); margin-top: 6px; }
+.cond { display: flex; align-items: center; gap: 14px; }
+.cond svg { width: 46px; height: 46px; color: var(--accent); flex: none; }
+.cond span { font: 500 22px/1.2 var(--display); }
+.stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); padding-top: 16px; gap: 12px; }
+.stat .v { font-size: 20px; margin-top: 2px; }
+.stat .v small { font-size: 12px; color: var(--ink-2); margin-left: 3px; font-family: var(--body); }
+.ridge { position: absolute; left: 0; bottom: 0; width: 100%; height: 44px; color: var(--line); opacity: .6; pointer-events: none; }
+.now > *:not(.ridge) { position: relative; }
+.local { padding: 28px 30px 26px; display: grid; gap: 18px; align-content: start; min-width: 0; }
+.local .desc { font-size: 17px; line-height: 1.8; max-width: 62ch; margin: 0; }
+.kv { display: grid; grid-template-columns: 8.5em minmax(0, 1fr); gap: 4px 18px; border-top: 1px solid var(--line); padding-top: 16px; }
+.kv dt { font-size: 13px; color: var(--ink-2); letter-spacing: .06em; padding-top: 2px; }
+.kv dd { margin: 0 0 10px; max-width: 64ch; }
+.kv dd.tc { color: var(--hot); }
+
+/* Section shell */
+section.block { margin-block: 36px; }
+.block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--ink); margin-bottom: 18px; flex-wrap: wrap; }
+.block-head .meta { font-size: 12px; color: var(--ink-2); }
+
+/* Nine-day strip */
+.fnd { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(168px, 1fr); gap: 0; overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); scrollbar-width: thin; }
+.day { padding: 18px 16px 16px; border-right: 1px solid var(--line); display: grid; gap: 10px; align-content: start; }
+.day:last-child { border-right: 0; }
+.day .d { display: flex; justify-content: space-between; align-items: baseline; }
+.day .d b { font: 500 16px var(--display); }
+.day .d span { font-size: 12px; color: var(--ink-2); }
+.day svg { width: 34px; height: 34px; color: var(--accent); }
+.day .ic { font-size: 13px; color: var(--ink-2); min-height: 1.6em; }
+.day .t { font-size: 18px; }
+.day .t .lo { color: var(--cold); } .day .t .hi { color: var(--hot); }
+.day .rh { font-size: 12px; color: var(--ink-2); }
+.day .w { font-size: 13px; line-height: 1.6; color: var(--ink); border-top: 1px solid var(--line); padding-top: 10px; }
+.psr { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--ink-2); }
+.psr .pl { grid-column: 1 / -1; }
+.psr i { display: inline-flex; gap: 2px; }
+.psr i b { width: 6px; height: 10px; border-radius: 1px; background: var(--line); }
+.psr i b.on { background: var(--rain); }
+
+/* District panels */
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; }
+.rows { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 6px 18px; }
+.row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) 4.5em; align-items: center; gap: 14px; padding-block: 8px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.row:last-child { border-bottom: 0; }
+.row .track { height: 6px; background: var(--accent-soft); border-radius: 3px; overflow: hidden; }
+.row .fill { height: 100%; background: var(--bar); border-radius: 3px; }
+.row.hl .fill { background: var(--accent); }
+.row .val { text-align: right; }
+.row.maint { color: var(--ink-3); }
+.rows.rain .fill { background: var(--rain); }
+
+/* 3D map */
+.map-shell { position: relative; height: 560px; border-radius: var(--r); overflow: hidden; border: 1px solid var(--line); background: #0B1824; }
+#map3d { position: absolute; inset: 0; }
+#map3d .cesium-viewer-bottom { left: auto; right: 8px; bottom: 6px; opacity: .55; }
+.map-cover { position: absolute; inset: 0; display: grid; place-items: center; color: #C9D6E0; font-size: 14px; letter-spacing: .08em; background: #0B1824; transition: opacity .6s; }
+.map-cover.done { opacity: 0; pointer-events: none; }
+.map-tools { position: absolute; top: 14px; left: 14px; display: flex; gap: 8px; flex-wrap: wrap; z-index: 2; }
+.seg { display: inline-flex; background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); border-radius: 999px; padding: 3px; backdrop-filter: blur(6px); }
+.seg button, .map-reset { font: 500 13px var(--body); color: #C9D6E0; background: transparent; border: 0; padding: 6px 14px; border-radius: 999px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: #F2F5F7; color: #0E1C2B; }
+.map-reset { background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(6px); }
+.map-legend { position: absolute; left: 14px; bottom: 14px; z-index: 2; background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 10px 12px; color: #C9D6E0; font-size: 12px; display: grid; gap: 6px; min-width: 180px; backdrop-filter: blur(6px); }
+.map-legend .ramp { height: 6px; border-radius: 3px; }
+.map-legend .ends { display: flex; justify-content: space-between; font-family: var(--data); }
+.map-credit { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.map-zoom { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); z-index: 2; display: grid; background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; overflow: hidden; backdrop-filter: blur(6px); }
+.map-zoom button { width: 40px; height: 40px; display: grid; place-items: center; background: transparent; border: 0; color: #E6ECF1; cursor: pointer; }
+.map-zoom button + button { border-top: 1px solid rgba(255,255,255,.14); }
+.map-zoom button:hover { background: rgba(255,255,255,.08); }
+.map-zoom svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.map-tools button:focus-visible, .map-zoom button:focus-visible { outline: 2px solid #63B4CC; outline-offset: 2px; }
+.map-shell.full { position: fixed; inset: 0; z-index: 50; height: auto; border-radius: 0; border: 0; }
+.map-shell.full .map-tools { top: calc(14px + env(safe-area-inset-top, 0px)); left: max(14px, env(safe-area-inset-left, 0px)); }
+.map-shell.full .map-legend { bottom: calc(14px + env(safe-area-inset-bottom, 0px)); left: max(14px, env(safe-area-inset-left, 0px)); }
+.map-shell.full .map-zoom { right: max(14px, env(safe-area-inset-right, 0px)); }
+html.map-open, html.map-open body { overflow: hidden; }
+
+.notes { display: grid; gap: 10px; }
+.note { background: var(--accent-soft); border-radius: var(--r); padding: 14px 18px; max-width: 80ch; }
+
+footer { border-top: 1px solid var(--line); margin-top: 48px; }
+footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--ink-2); }
+
+.state { padding: 60px 0; text-align: center; color: var(--ink-2); display: grid; gap: 14px; justify-items: center; }
+.state button { font: inherit; padding: 8px 18px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); background: transparent; cursor: pointer; }
+
+@media (max-width: 880px) {
+  .hero { grid-template-columns: minmax(0, 1fr); }
+  .now { border-right: 0; border-bottom: 1px solid var(--line); }
+  .split { grid-template-columns: minmax(0, 1fr); }
+  .map-shell { height: 460px; }
+}
+@media (max-width: 520px) {
+  .temp .big { font-size: 84px; }
+  .now, .local { padding: 22px 18px; }
+  .kv { grid-template-columns: minmax(0, 1fr); }
+  .kv dt { padding-top: 8px; }
+  .mast-right .place { display: none; }
+  .row { grid-template-columns: 6.5em minmax(0, 1fr) 4em; gap: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .iconbtn.spin svg { animation: none; } }
+</style>
+</head>
+<body>
+<header class="mast">
+  <div class="wrap">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="16" cy="16" r="14"/><path d="M2 19c4-3 7-5 10-3s5 1 8-3 7-4 10-1"/><path d="M6 25h20" opacity=".5"/></svg>
+      <b>香港天氣</b>
+    </div>
+    <div class="mast-right">
+      <span class="place">香港</span>
+      <span class="clock num" id="clock">--:--</span>
+      <button class="iconbtn" id="refresh" type="button" aria-label="重新整理" title="重新整理">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="warnband" id="warnband" hidden><div class="wrap" id="warnwrap"></div></div>
+
+<main class="wrap" id="main">
+  <div class="state" id="state"><span>載入中</span></div>
+  <div id="content" hidden>
+    <div class="hero">
+      <div class="now">
+        <div class="now-head"><span class="label">本港地區天氣報告</span><span class="label num" id="rhrTime"></span></div>
+        <div class="temp"><span class="big num" id="nowTemp">--</span><span class="unit">°C</span></div>
+        <div class="cond" id="nowCond"></div>
+        <div class="stats">
+          <div class="stat"><div class="label">相對濕度</div><div class="v num" id="nowRh">--</div></div>
+          <div class="stat"><div class="label">紫外線指數</div><div class="v num" id="nowUv">--</div></div>
+          <div class="stat"><div class="label">海面溫度</div><div class="v num" id="nowSea">--</div></div>
+        </div>
+        <svg class="ridge" viewBox="0 0 400 60" preserveAspectRatio="none" aria-hidden="true"><path d="M0 60 L0 44 L40 40 L70 30 L95 34 L120 22 L140 14 L160 20 L185 12 L205 24 L240 30 L270 26 L300 36 L330 32 L360 40 L400 38 L400 60 Z" fill="currentColor" opacity=".55"/></svg>
+      </div>
+      <div class="local">
+        <div class="now-head"><span class="label" id="flwPeriod">本港地區天氣預報</span><span class="label num" id="flwTime"></span></div>
+        <p class="desc" id="flwDesc"></p>
+        <dl class="kv" id="flwKv"></dl>
+      </div>
+    </div>
+
+    <div class="notes" id="notes"></div>
+
+    <section class="block">
+      <div class="block-head"><h2>3D地圖</h2><span class="meta num" id="mapTime"></span></div>
+      <div class="map-shell">
+        <div id="map3d"></div>
+        <div class="map-tools">
+          <div class="seg" role="group">
+            <button type="button" id="layerTemp" aria-pressed="true">氣溫</button>
+            <button type="button" id="layerRain" aria-pressed="false">雨量</button>
+          </div>
+          <button type="button" class="map-reset" id="mapReset">重設視角</button>
+          <button type="button" class="map-reset" id="mapFull" aria-pressed="false">全螢幕</button>
+        </div>
+        <div class="map-zoom">
+          <button type="button" id="zoomIn" aria-label="放大" title="放大"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
+          <button type="button" id="zoomOut" aria-label="縮小" title="縮小"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
+        </div>
+        <div class="map-legend" id="mapLegend"></div>
+        <div class="map-cover" id="mapCover">載入中</div>
+      </div>
+      <div class="map-credit">地圖資料：香港特別行政區政府地政總署</div>
+    </section>
+
+    <section class="block">
+      <div class="block-head"><h2>九天天氣預報</h2><span class="meta num" id="fndTime"></span></div>
+      <div class="fnd" id="fnd"></div>
+    </section>
+
+    <section class="block split">
+      <div>
+        <div class="block-head"><h2>分區氣溫</h2><span class="meta num" id="tempTime"></span></div>
+        <div class="rows" id="temps"></div>
+      </div>
+      <div>
+        <div class="block-head"><h2>雨量</h2><span class="meta num" id="rainTime"></span></div>
+        <div class="rows rain" id="rains"></div>
+      </div>
+    </section>
+
+    <section class="block" id="soilBlock" hidden>
+      <div class="block-head"><h2>土壤溫度</h2><span class="meta num" id="soilTime"></span></div>
+      <div class="rows" id="soil"></div>
+    </section>
+  </div>
+</main>
+
+<footer><div class="wrap"><span>資料來源：香港天文台</span><span>天氣預報僅供參考</span></div></footer>
+
+<script>
+(function () {
+  const API = "https://data.weather.gov.hk/weatherAPI/opendata/weather.php?lang=tc&dataType=";
+  const REFRESH_MS = 5 * 60 * 1000;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+  // Official HKO weather icon descriptions (wxicon page). Text shown exactly as published.
+  const ICON_TEXT = {
+    50: "陽光充沛", 51: "間有陽光", 52: "短暫陽光", 53: "間有陽光 幾陣驟雨", 54: "短暫陽光 有驟雨",
+    60: "多雲", 61: "密雲", 62: "微雨", 63: "雨", 64: "大雨", 65: "雷暴",
+    70: "天色良好", 71: "天色良好", 72: "天色良好", 73: "天色良好", 74: "天色良好", 75: "天色良好",
+    76: "大致多雲", 77: "天色大致良好",
+    80: "大風", 81: "乾燥", 82: "潮濕", 83: "霧", 84: "薄霧", 85: "煙霞",
+    90: "熱", 91: "暖", 92: "涼", 93: "冷"
+  };
+
+  // Line icons, drawn for this page (no external images).
+  const P = {
+    sun: '<circle cx="24" cy="24" r="8"/><path d="M24 6v5M24 37v5M6 24h5M37 24h5M11.3 11.3l3.5 3.5M33.2 33.2l3.5 3.5M11.3 36.7l3.5-3.5M33.2 14.8l3.5-3.5"/>',
+    cloud: '<path d="M14 36h20a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0 1 13z"/>',
+    sunCloud: '<path d="M17 10v3M8 19h3M10.6 12.6l2.1 2.1M25.4 12.6l-2.1 2.1"/><path d="M12.5 22a6 6 0 0 1 11-4"/><path d="M16 38h18a7 7 0 0 0 0-14 10 10 0 0 0-19 3 5.5 5.5 0 0 0 1 11z"/>',
+    rain: '<path d="M14 30h20a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0 1 13z"/><path d="M17 35l-2 5M25 35l-2 5M33 35l-2 5"/>',
+    heavy: '<path d="M14 28h20a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0 1 13z"/><path d="M15 33l-3 8M22 33l-3 8M29 33l-3 8M36 33l-3 8"/>',
+    sunRain: '<path d="M17 8v3M8 17h3M10.6 10.6l2.1 2.1"/><path d="M12.5 20a6 6 0 0 1 11-4"/><path d="M16 33h18a7 7 0 0 0 0-14 10 10 0 0 0-19 3 5.5 5.5 0 0 0 1 11z"/><path d="M20 37l-2 4M28 37l-2 4"/>',
+    storm: '<path d="M14 28h20a8 8 0 0 0 0-16 11 11 0 0 0-21 3 6.5 6.5 0 0 0 1 13z"/><path d="M25 30l-5 7h6l-4 7"/>',
+    moon: '<path d="M30 8a15 15 0 1 0 10 25A13 13 0 0 1 30 8z"/>',
+    moonCloud: '<path d="M26 7a11 11 0 1 0 9 17 9 9 0 0 1-9-17z"/><path d="M14 40h18a7 7 0 0 0 0-14 10 10 0 0 0-19 3 5.5 5.5 0 0 0 1 11z"/>',
+    wind: '<path d="M6 18h24a5 5 0 1 0-5-5M6 26h32a5 5 0 1 1-5 5M6 34h16"/>',
+    fog: '<path d="M8 16h32M6 24h36M10 32h28M14 40h20"/>',
+    drop: '<path d="M24 6c6 9 11 15 11 21a11 11 0 0 1-22 0c0-6 5-12 11-21z"/>',
+    thermo: '<path d="M20 28V10a4 4 0 0 1 8 0v18a8 8 0 1 1-8 0z"/><path d="M24 16v15"/>'
+  };
+  function iconKey(c) {
+    c = +c;
+    if (c === 50) return "sun";
+    if (c === 51 || c === 52) return "sunCloud";
+    if (c === 53 || c === 54) return "sunRain";
+    if (c === 60 || c === 61) return "cloud";
+    if (c === 62 || c === 63) return "rain";
+    if (c === 64) return "heavy";
+    if (c === 65) return "storm";
+    if (c >= 70 && c <= 75) return "moon";
+    if (c === 76) return "cloud";
+    if (c === 77) return "moonCloud";
+    if (c === 80) return "wind";
+    if (c === 81 || c === 82) return "drop";
+    if (c >= 83 && c <= 85) return "fog";
+    if (c >= 90) return "thermo";
+    return "cloud";
+  }
+  const svgIcon = (c) => '<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + P[iconKey(c)] + "</svg>";
+
+  // Warning signal colours keyed by HKO warning code.
+  const SIG = {
+    WRAINA: ["#E8A800", ""], WRAINR: ["#D7263D", ""], WRAINB: ["#111111", ""],
+    WFIREY: ["#E8A800", ""], WFIRER: ["#D7263D", ""],
+    TC1: ["#2F4A63", "1"], TC3: ["#2F4A63", "3"], TC8NE: ["#2F4A63", "8"], TC8SE: ["#2F4A63", "8"],
+    TC8SW: ["#2F4A63", "8"], TC8NW: ["#2F4A63", "8"], TC9: ["#2F4A63", "9"], TC10: ["#2F4A63", "10"],
+    WHOT: ["#C8551E", ""], WCOLD: ["#2F7FB8", ""], WFROST: ["#5BA4C9", ""], WTS: ["#6A4FA3", ""],
+    WL: ["#8A5A2B", ""], WMSGNL: ["#3D5A73", ""], WFNTSA: ["#1F7F7A", ""], WTMW: ["#B3261E", ""]
+  };
+
+  const hhmm = (iso) => (iso ? String(iso).slice(11, 16) : "");
+  const mdOf = (iso) => (iso ? +String(iso).slice(5, 7) + "月" + +String(iso).slice(8, 10) + "日" : "");
+  const stamp = (iso) => (iso ? mdOf(iso) + " " + hhmm(iso) : "");
+
+  async function get(type) {
+    let timer;
+    const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(type + " timeout")), 15000); });
+    const r = await Promise.race([fetch(API + type, { cache: "no-store" }), timeout]).finally(() => clearTimeout(timer));
+    if (!r.ok) throw new Error(type + " " + r.status);
+    return r.json();
+  }
+
+  function renderWarnings(sum, info) {
+    const band = $("warnband"), wrap = $("warnwrap");
+    const items = Object.keys(sum || {}).map((k) => ({ key: k, ...sum[k] })).filter((w) => w.actionCode !== "CANCEL");
+    if (!items.length) { band.hidden = true; wrap.innerHTML = ""; return; }
+    let html = '<span class="label">天氣警告</span>';
+    for (const w of items) {
+      const s = SIG[w.code] || SIG[w.key] || ["#3D5A73", ""];
+      html += '<span class="chip" style="--sig:' + s[0] + '"><i>' + esc(s[1]) + "</i>" + esc(w.name) +
+        (w.issueTime ? ' <small>' + esc(hhmm(w.issueTime)) + "</small>" : "") + "</span>";
+    }
+    const det = (info && info.details) || [];
+    if (det.length) {
+      html += '<details class="warn-detail"><summary>顯示全文</summary><div class="warn-text">' +
+        det.map((d) => (d.contents || []).map((p) => "<p>" + esc(p) + "</p>").join("")).join("") + "</div></details>";
+    }
+    wrap.innerHTML = html; band.hidden = false;
+  }
+
+  function renderNow(r, fnd) {
+    const temps = (r.temperature && r.temperature.data) || [];
+    const hko = temps.find((t) => t.place === "香港天文台") || temps[0];
+    $("nowTemp").textContent = hko ? hko.value : "--";
+    $("rhrTime").textContent = stamp(r.updateTime);
+    const code = Array.isArray(r.icon) ? r.icon[0] : r.icon;
+    $("nowCond").innerHTML = code ? svgIcon(code) + "<span>" + esc(ICON_TEXT[code] || "") + "</span>" : "";
+    const rh = r.humidity && r.humidity.data && r.humidity.data[0];
+    $("nowRh").innerHTML = rh ? rh.value + "<small>%</small>" : "--";
+    const uv = r.uvindex && r.uvindex.data && r.uvindex.data[0];
+    $("nowUv").innerHTML = uv ? esc(uv.value) + "<small>" + esc(uv.desc || "") + "</small>" : "--";
+    const sea = fnd && fnd.seaTemp;
+    $("nowSea").innerHTML = sea ? esc(sea.value) + "<small>°C</small>" : "--";
+  }
+
+  function renderLocal(f) {
+    $("flwPeriod").textContent = f.forecastPeriod || "本港地區天氣預報";
+    $("flwTime").textContent = stamp(f.updateTime);
+    $("flwDesc").textContent = f.forecastDesc || "";
+    const rows = [["概況", f.generalSituation, ""], ["熱帶氣旋資訊", f.tcInfo, "tc"], ["火災危險警告信息", f.fireDangerWarning, ""], ["展望", f.outlook, ""]];
+    $("flwKv").innerHTML = rows.filter((x) => x[1]).map((x) => "<dt>" + x[0] + '</dt><dd class="' + x[2] + '">' + esc(x[1]) + "</dd>").join("");
+  }
+
+  function renderNotes(r, swt) {
+    const out = [];
+    const push = (v) => { if (!v) return; (Array.isArray(v) ? v : [v]).forEach((x) => { const t = typeof x === "string" ? x : x && x.desc; if (t) out.push(t); }); };
+    push(r.warningMessage); push(r.specialWxTips); push(r.tcmessage); push(swt && swt.swt);
+    $("notes").innerHTML = out.map((t) => '<div class="note">' + esc(t) + "</div>").join("");
+    if (r.lightning && r.lightning.data && r.lightning.data.length) {
+      const places = r.lightning.data.filter((d) => String(d.occur) === "true").map((d) => d.place);
+      if (places.length) $("notes").innerHTML += '<div class="note"><span class="label">閃電</span> ' + esc(places.join("、")) + "</div>";
+    }
+  }
+
+  const PSR_LEVEL = { "低": 1, "中低": 2, "中": 3, "中高": 4, "高": 5 };
+  function renderFnd(f) {
+    $("fndTime").textContent = "更新時間 " + stamp(f.updateTime);
+    $("fnd").innerHTML = (f.weatherForecast || []).map((d) => {
+      const ds = d.forecastDate || "";
+      const lvl = PSR_LEVEL[d.PSR] || 0;
+      const bars = [1, 2, 3, 4, 5].map((i) => '<b class="' + (i <= lvl ? "on" : "") + '"></b>').join("");
+      return '<article class="day">' +
+        '<div class="d"><b>' + (+ds.slice(4, 6)) + "月" + (+ds.slice(6, 8)) + "日</b><span>" + esc(d.week) + "</span></div>" +
+        svgIcon(d.ForecastIcon) +
+        '<div class="ic">' + esc(ICON_TEXT[d.ForecastIcon] || "") + "</div>" +
+        '<div class="t num"><span class="lo">' + esc(d.forecastMintemp && d.forecastMintemp.value) + '</span> – <span class="hi">' + esc(d.forecastMaxtemp && d.forecastMaxtemp.value) + "</span>°C</div>" +
+        '<div class="rh num">相對濕度 ' + esc(d.forecastMinrh && d.forecastMinrh.value) + "–" + esc(d.forecastMaxrh && d.forecastMaxrh.value) + "%</div>" +
+        '<div class="psr"><span class="pl">顯著降雨概率</span><i>' + bars + "</i><span>" + esc(d.PSR || "") + "</span></div>" +
+        '<div class="w">' + esc(d.forecastWeather) + "<br>" + esc(d.forecastWind) + "</div>" +
+        "</article>";
+    }).join("");
+  }
+
+  function renderTemps(r) {
+    const t = (r.temperature && r.temperature.data) || [];
+    $("tempTime").textContent = hhmm(r.temperature && r.temperature.recordTime);
+    if (!t.length) { $("temps").innerHTML = ""; return; }
+    const vals = t.map((x) => +x.value);
+    const lo = Math.min(...vals) - 1, hi = Math.max(...vals);
+    $("temps").innerHTML = t.slice().sort((a, b) => b.value - a.value).map((x) => {
+      const w = Math.max(4, ((x.value - lo) / (hi - lo || 1)) * 100);
+      return '<div class="row' + (x.place === "香港天文台" ? " hl" : "") + '"><span>' + esc(x.place) + '</span><div class="track"><div class="fill" style="width:' + w + '%"></div></div><span class="val num">' + esc(x.value) + "°C</span></div>";
+    }).join("");
+  }
+
+  function renderRain(r) {
+    const rf = r.rainfall || {};
+    const d = rf.data || [];
+    $("rainTime").textContent = rf.startTime ? hhmm(rf.startTime) + "–" + hhmm(rf.endTime) : "";
+    const top = Math.max(10, ...d.map((x) => +x.max || 0));
+    $("rains").innerHTML = d.slice().sort((a, b) => (+b.max || 0) - (+a.max || 0)).map((x) => {
+      const maint = String(x.main).toUpperCase() === "TRUE";
+      const v = maint ? "維修中" : (x.min != null ? x.min + "–" + x.max : x.max) + " mm";
+      const w = maint ? 0 : ((+x.max || 0) / top) * 100;
+      return '<div class="row' + (maint ? " maint" : "") + '"><span>' + esc(x.place) + '</span><div class="track"><div class="fill" style="width:' + w + '%"></div></div><span class="val num">' + esc(v) + "</span></div>";
+    }).join("");
+  }
+
+  function renderSoil(f) {
+    const s = (f && f.soilTemp) || [];
+    $("soilBlock").hidden = !s.length;
+    if (!s.length) return;
+    $("soilTime").textContent = stamp(s[0].recordTime);
+    $("soil").innerHTML = s.map((x) => '<div class="row"><span>' + esc(x.place) + '</span><span class="num">深度 ' + esc(x.depth && x.depth.value) + ' 米</span><span class="val num">' + esc(x.value) + "°C</span></div>").join("");
+  }
+
+  /* ---------- 3D map ---------- */
+  // Sample key published in the Lands Department API documentation. Apply for a free key of your own at 3dmap@landsd.gov.hk.
+  const LANDSD_KEY = "3967f8f365694e0798af3e7678509421";
+  const CESIUM_BASE = "https://cdn.jsdelivr.net/npm/cesium@1.121.0/Build/Cesium/";
+  const dms = (d, m, s) => d + m / 60 + s / 3600;
+  // Station positions from the HKO weather station information page: [latitude, longitude, ground elevation in metres].
+  const STN = {
+    "香港天文台": [dms(22, 18, 7), dms(114, 10, 27), 32], "京士柏": [dms(22, 18, 43), dms(114, 10, 22), 65],
+    "黃竹坑": [dms(22, 14, 52), dms(114, 10, 25), 5], "打鼓嶺": [dms(22, 31, 43), dms(114, 9, 24), 15],
+    "流浮山": [dms(22, 28, 8), dms(113, 59, 1), 31], "大埔": [dms(22, 26, 54), dms(114, 10, 38), 6],
+    "沙田": [dms(22, 24, 9), dms(114, 12, 36), 6], "屯門": [dms(22, 23, 9), dms(113, 57, 51), 28],
+    "將軍澳": [dms(22, 18, 57), dms(114, 15, 20), 38], "西貢": [dms(22, 22, 32), dms(114, 16, 28), 4],
+    "長洲": [dms(22, 12, 4), dms(114, 1, 36), 72], "赤鱲角": [dms(22, 18, 34), dms(113, 55, 19), 6],
+    "青衣": [dms(22, 20, 39), dms(114, 6, 36), 8], "石崗": [dms(22, 26, 10), dms(114, 5, 5), 16],
+    "荃灣可觀": [dms(22, 23, 1), dms(114, 6, 28), 142], "荃灣城門谷": [dms(22, 22, 32), dms(114, 7, 36), 35],
+    "香港公園": [dms(22, 16, 42), dms(114, 9, 44), 26], "筲箕灣": [dms(22, 16, 54), dms(114, 14, 10), 53],
+    "九龍城": [dms(22, 20, 6), dms(114, 11, 5), 92], "跑馬地": [dms(22, 16, 14), dms(114, 11, 1), 5],
+    "黃大仙": [dms(22, 20, 22), dms(114, 12, 19), 21], "赤柱": [dms(22, 12, 51), dms(114, 13, 7), 31],
+    "觀塘": [dms(22, 19, 7), dms(114, 13, 29), 90], "深水埗": [dms(22, 20, 9), dms(114, 8, 13), 11],
+    "啟德跑道公園": [dms(22, 18, 18), dms(114, 13, 1), 4], "元朗公園": [dms(22, 26, 27), dms(114, 1, 6), 8],
+    "大美督": [dms(22, 28, 31), dms(114, 14, 15), 51]
+  };
+  // Approximate centre points of the 18 districts used for the rainfall columns: [latitude, longitude].
+  const DIST = {
+    "中西區": [22.2820, 114.1500], "灣仔": [22.2770, 114.1830], "東區": [22.2790, 114.2260], "南區": [22.2440, 114.1750],
+    "油尖旺": [22.3110, 114.1700], "深水埗": [22.3320, 114.1590], "九龍城": [22.3240, 114.1910], "黃大仙": [22.3410, 114.1980],
+    "觀塘": [22.3130, 114.2260], "葵青": [22.3530, 114.1170], "荃灣": [22.3710, 114.1140], "屯門": [22.3910, 113.9770],
+    "元朗": [22.4450, 114.0220], "北區": [22.4950, 114.1380], "大埔": [22.4500, 114.1690], "沙田": [22.3830, 114.1950],
+    "西貢": [22.3830, 114.2700], "離島區": [22.2640, 113.9600]
+  };
+  const HOME = { lon: 114.168, lat: 22.248, h: 2300, heading: -5, pitch: -30 };
+  const MIN_ZOOM = 80, MAX_ZOOM = 90000;
+  const RAMP_T = ["#5FA8D3", "#E9B44C", "#D9643A"];
+  const RAMP_R = ["#9CC3E6", "#2E6FB0"];
+  let viewer = null, mapState = "idle", mapLayer = "temp", lastRhr = null;
+  const tempEnts = {}, rainEnts = {};
+
+  function loadCesium() {
+    return new Promise((res, rej) => {
+      if (window.Cesium) return res();
+      window.CESIUM_BASE_URL = CESIUM_BASE;
+      const css = document.createElement("link"); css.rel = "stylesheet"; css.href = CESIUM_BASE + "Widgets/widgets.css"; document.head.appendChild(css);
+      const s = document.createElement("script"); s.crossOrigin = "anonymous"; s.src = CESIUM_BASE + "Cesium.js"; s.onload = res; s.onerror = () => rej(new Error("cesium load"));
+      document.head.appendChild(s);
+    });
+  }
+  function goHome(fly) {
+    const C = window.Cesium, o = { destination: C.Cartesian3.fromDegrees(HOME.lon, HOME.lat, HOME.h), orientation: { heading: C.Math.toRadians(HOME.heading), pitch: C.Math.toRadians(HOME.pitch), roll: 0 } };
+    fly ? viewer.camera.flyTo(Object.assign(o, { duration: 1.4 })) : viewer.camera.setView(o);
+  }
+  function focusPoint(screenPos) {
+    const C = window.Cesium, sc = viewer.scene;
+    let p;
+    if (sc.pickPositionSupported) { try { p = sc.pickPosition(screenPos); } catch (e) { p = undefined; } }
+    return p || viewer.camera.pickEllipsoid(screenPos, sc.globe.ellipsoid);
+  }
+  // Smoothly move the camera toward (frac > 0) or away from (frac < 0) the point under screenPos.
+  function zoomToward(screenPos, frac) {
+    if (!viewer) return;
+    const C = window.Cesium, cam = viewer.camera, sc = viewer.scene;
+    const target = focusPoint(screenPos);
+    const dir = target ? C.Cartesian3.normalize(C.Cartesian3.subtract(target, cam.positionWC, new C.Cartesian3()), new C.Cartesian3()) : C.Cartesian3.clone(cam.direction);
+    const dist = target ? C.Cartesian3.distance(cam.positionWC, target) : cam.positionCartographic.height;
+    let total = dist * frac;
+    if (total > 0) total = Math.min(total, Math.max(0, dist - MIN_ZOOM));
+    if (total < 0 && cam.positionCartographic.height > MAX_ZOOM * 0.8) return;
+    const start = performance.now(), dur = 320;
+    let done = 0;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / dur), eased = 1 - Math.pow(1 - t, 3);
+      const want = total * eased;
+      cam.move(dir, want - done);
+      done = want;
+      sc.requestRender();
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+  function zoomCenter(frac) {
+    if (!viewer) return;
+    const cv = viewer.canvas;
+    zoomToward(new window.Cesium.Cartesian2(cv.clientWidth / 2, cv.clientHeight / 2), frac);
+  }
+  function setFull(on) {
+    const shell = document.querySelector(".map-shell");
+    shell.classList.toggle("full", on);
+    document.documentElement.classList.toggle("map-open", on);
+    $("mapFull").textContent = on ? "退出全螢幕" : "全螢幕";
+    $("mapFull").setAttribute("aria-pressed", String(on));
+    if (viewer) { viewer.resize(); viewer.scene.requestRender(); }
+  }
+  function rampColor(stops, f) {
+    const C = window.Cesium; f = Math.min(1, Math.max(0, f));
+    const seg = f * (stops.length - 1), i = Math.min(stops.length - 2, Math.floor(seg));
+    return C.Color.lerp(C.Color.fromCssColorString(stops[i]), C.Color.fromCssColorString(stops[i + 1]), seg - i, new C.Color());
+  }
+  function labelStyle(text) {
+    const C = window.Cesium;
+    return { text, font: '500 14px "Noto Sans TC","PingFang TC","Microsoft JhengHei",sans-serif', fillColor: C.Color.WHITE,
+      showBackground: true, backgroundColor: C.Color.fromCssColorString("#0E1C2B").withAlpha(0.82), backgroundPadding: new C.Cartesian2(9, 5),
+      verticalOrigin: C.VerticalOrigin.BOTTOM, pixelOffset: new C.Cartesian2(0, -14), disableDepthTestDistance: Number.POSITIVE_INFINITY,
+      scaleByDistance: new C.NearFarScalar(1500, 1, 40000, 0.6) };
+  }
+
+  async function initMap() {
+    if (mapState !== "idle") return;
+    mapState = "loading";
+    try {
+      await loadCesium();
+      const C = window.Cesium;
+      viewer = new C.Viewer("map3d", {
+        animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
+        navigationHelpButton: false, fullscreenButton: false, infoBox: false, selectionIndicator: false, baseLayer: false,
+        requestRenderMode: true, maximumRenderTimeChange: Infinity
+      });
+      const sc = viewer.scene;
+      sc.globe.baseColor = C.Color.fromCssColorString("#1A2F3B");
+      sc.globe.showGroundAtmosphere = false;
+      sc.skyAtmosphere.show = false; if (sc.skyBox) sc.skyBox.show = false; sc.sun.show = false; sc.moon.show = false;
+      sc.backgroundColor = C.Color.fromCssColorString("#0B1824");
+      sc.light = new C.DirectionalLight({ direction: C.Cartesian3.normalize(new C.Cartesian3(-0.3, 0.4, -0.85), new C.Cartesian3()), intensity: 2.2 });
+      const ctl = sc.screenSpaceCameraController;
+      ctl.minimumZoomDistance = MIN_ZOOM;
+      ctl.maximumZoomDistance = MAX_ZOOM;
+      ctl.inertiaSpin = 0.85; ctl.inertiaTranslate = 0.85; ctl.inertiaZoom = 0.75;
+      // Double-click zooms in toward the clicked point, as on Google Maps.
+      const handler = viewer.cesiumWidget.screenSpaceEventHandler;
+      handler.removeInputAction(C.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+      handler.setInputAction((e) => zoomToward(e.position, 0.5), C.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+      // Lands Department aerial imagery on the globe fills sea areas and anything the 3D terrain has not loaded yet.
+      viewer.imageryLayers.addImageryProvider(new C.UrlTemplateImageryProvider({
+        url: "https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/imagery/WGS84/{z}/{x}/{y}.png",
+        maximumLevel: 19, minimumLevel: 0,
+        rectangle: C.Rectangle.fromDegrees(113.75, 22.13, 114.52, 22.58)
+      }));
+      const base = "https://data.map.gov.hk/api/3d-data/3dtiles/";
+      // Allow more parallel downloads from the Lands Department servers.
+      C.RequestScheduler.requestsByServer["data.map.gov.hk:443"] = 36;
+      C.RequestScheduler.requestsByServer["mapapi.geodata.gov.hk:443"] = 24;
+      // Load the coarse level first, then sharpen only what is on screen and near the camera.
+      const fast = { dynamicScreenSpaceError: true, foveatedScreenSpaceError: true, cullRequestsWhileMoving: true, preloadWhenHidden: true };
+      const [terrain, bld] = await Promise.all([
+        C.Cesium3DTileset.fromUrl(base + "t_t_f1/tileset.json?key=" + LANDSD_KEY, Object.assign({
+          maximumScreenSpaceError: 32, skipLevelOfDetail: true, baseScreenSpaceError: 1024, skipScreenSpaceErrorFactor: 16,
+          skipLevels: 1, immediatelyLoadDesiredLevelOfDetail: false, loadSiblings: false
+        }, fast)),
+        C.Cesium3DTileset.fromUrl(base + "t_bi_f1/tileset.json?key=" + LANDSD_KEY, Object.assign({ maximumScreenSpaceError: 48 }, fast))
+      ]);
+      sc.primitives.add(terrain);
+      bld.style = new C.Cesium3DTileStyle({ color: "color('#F2F5F7')" });
+      sc.primitives.add(bld);
+      // Redraw whenever tiles arrive, and keep drawing until the view has finished loading.
+      [terrain, bld].forEach((ts) => {
+        ts.loadProgress.addEventListener(() => sc.requestRender());
+        ts.tileLoad.addEventListener(() => sc.requestRender());
+      });
+      sc.postRender.addEventListener(() => {
+        if (!terrain.tilesLoaded || !bld.tilesLoaded) requestAnimationFrame(() => sc.requestRender());
+      });
+      goHome(false);
+      // Show the map as soon as the first ground tiles arrive; buildings keep streaming in afterwards.
+      const reveal = () => $("mapCover").classList.add("done");
+      const firstTile = () => { setTimeout(reveal, 250); terrain.tileLoad.removeEventListener(firstTile); };
+      terrain.tileLoad.addEventListener(firstTile);
+      setTimeout(reveal, 6000);
+      mapState = "ready";
+      if (lastRhr) updateMap(lastRhr);
+    } catch (e) {
+      console.error("[hkwx] map", e);
+      mapState = "failed";
+      $("mapCover").textContent = "未能載入地圖";
+    }
+  }
+
+  function renderLegend() {
+    const r = lastRhr || {};
+    if (mapLayer === "temp") {
+      const v = ((r.temperature && r.temperature.data) || []).map((x) => +x.value);
+      $("mapLegend").innerHTML = '<span>氣溫</span><div class="ramp" style="background:linear-gradient(90deg,' + RAMP_T.join(",") + ')"></div>' +
+        '<div class="ends"><span>' + (v.length ? Math.min(...v) : "--") + "°C</span><span>" + (v.length ? Math.max(...v) : "--") + "°C</span></div>";
+      $("mapTime").textContent = hhmm(r.temperature && r.temperature.recordTime);
+    } else {
+      const v = ((r.rainfall && r.rainfall.data) || []).map((x) => +x.max || 0);
+      $("mapLegend").innerHTML = '<span>雨量</span><div class="ramp" style="background:linear-gradient(90deg,' + RAMP_R.join(",") + ')"></div>' +
+        '<div class="ends"><span>0 mm</span><span>' + (v.length ? Math.max(...v) : 0) + " mm</span></div>";
+      $("mapTime").textContent = r.rainfall && r.rainfall.startTime ? hhmm(r.rainfall.startTime) + "–" + hhmm(r.rainfall.endTime) : "";
+    }
+  }
+
+  function updateMap(r) {
+    lastRhr = r;
+    renderLegend();
+    if (mapState !== "ready") return;
+    const C = window.Cesium;
+    const temps = (r.temperature && r.temperature.data) || [];
+    const tv = temps.map((x) => +x.value), lo = Math.min(...tv), hi = Math.max(...tv);
+    temps.forEach((x) => {
+      const p = STN[x.place]; if (!p) return;
+      const color = rampColor(RAMP_T, (x.value - lo) / ((hi - lo) || 1));
+      const text = x.place + "  " + x.value + "°";
+      let e = tempEnts[x.place];
+      if (!e) {
+        e = viewer.entities.add({ position: C.Cartesian3.fromDegrees(p[1], p[0], p[2] + 40),
+          point: { pixelSize: 9, color, outlineColor: C.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+          label: labelStyle(text) });
+        tempEnts[x.place] = e;
+      } else { e.label.text = text; e.point.color = color; }
+      e.show = mapLayer === "temp";
+    });
+    const rain = (r.rainfall && r.rainfall.data) || [];
+    const top = Math.max(10, ...rain.map((x) => +x.max || 0));
+    rain.forEach((x) => {
+      const p = DIST[x.place]; if (!p) return;
+      if (rainEnts[x.place]) rainEnts[x.place].forEach((e) => viewer.entities.remove(e));
+      const maint = String(x.main).toUpperCase() === "TRUE";
+      const mm = maint ? 0 : (+x.max || 0);
+      const len = mm > 0 ? 120 + mm * 60 : 0;
+      const ents = [];
+      if (len > 0) {
+        ents.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(p[1], p[0], len / 2),
+          cylinder: { length: len, topRadius: 650, bottomRadius: 650, material: rampColor(RAMP_R, mm / top).withAlpha(0.78) } }));
+      }
+      ents.push(viewer.entities.add({ position: C.Cartesian3.fromDegrees(p[1], p[0], len + 60),
+        label: labelStyle(x.place + "  " + (maint ? "維修中" : mm + " mm")) }));
+      ents.forEach((e) => { e.show = mapLayer === "rain"; });
+      rainEnts[x.place] = ents;
+    });
+    viewer.scene.requestRender();
+  }
+
+  function setLayer(layer) {
+    mapLayer = layer;
+    $("layerTemp").setAttribute("aria-pressed", String(layer === "temp"));
+    $("layerRain").setAttribute("aria-pressed", String(layer === "rain"));
+    Object.values(tempEnts).forEach((e) => { e.show = layer === "temp"; });
+    Object.values(rainEnts).forEach((a) => a.forEach((e) => { e.show = layer === "rain"; }));
+    renderLegend();
+    if (viewer) viewer.scene.requestRender();
+  }
+  $("layerTemp").addEventListener("click", () => setLayer("temp"));
+  $("layerRain").addEventListener("click", () => setLayer("rain"));
+  $("mapReset").addEventListener("click", () => { if (viewer) goHome(true); });
+  $("zoomIn").addEventListener("click", () => zoomCenter(0.5));
+  $("zoomOut").addEventListener("click", () => zoomCenter(-1));
+  $("mapFull").addEventListener("click", () => setFull(!document.querySelector(".map-shell").classList.contains("full")));
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && document.querySelector(".map-shell.full")) setFull(false); });
+
+  let busy = false, hasData = false;
+  async function load() {
+    if (busy) return; busy = true;
+    $("refresh").classList.add("spin");
+    try {
+      const types = ["rhrread", "flw", "fnd", "warnsum", "warningInfo", "swt"];
+      const res = await Promise.allSettled(types.map(get));
+      const d = {};
+      res.forEach((r, i) => { d[types[i]] = r.status === "fulfilled" ? r.value : null; if (r.status === "rejected") console.error("[hkwx]", types[i], r.reason); });
+      const safe = (fn, ...args) => { if (args.some((a) => a == null)) return; try { fn(...args); } catch (e) { console.error("[hkwx] render", fn.name, e); } };
+      if (!d.rhrread && !d.flw && !d.fnd) throw new Error("no data");
+      safe(renderWarnings, d.warnsum || {}, d.warningInfo || {});
+      safe(renderNow, d.rhrread, d.fnd || {});
+      safe(renderLocal, d.flw);
+      safe(renderNotes, d.rhrread || {}, d.swt || {});
+      safe(renderFnd, d.fnd);
+      safe(renderTemps, d.rhrread);
+      safe(renderRain, d.rhrread);
+      safe(renderSoil, d.fnd);
+      safe(updateMap, d.rhrread);
+      hasData = true;
+      $("state").hidden = true; $("content").hidden = false;
+    } catch (e) {
+      console.error("[hkwx]", e);
+      if (!hasData) {
+        $("content").hidden = true; $("state").hidden = false;
+        const inPreview = window.self !== window.top;
+        $("state").innerHTML = "<span>未能載入數據</span><span>" + (inPreview ? "請下載此檔案並用瀏覽器開啟" : "請檢查網絡連線後重新載入") + "</span><button type=\"button\" id=\"retry\">重新載入</button>";
+        $("retry").addEventListener("click", load);
+      }
+    } finally { busy = false; $("refresh").classList.remove("spin"); }
+  }
+
+  function tick() {
+    const s = new Date().toLocaleTimeString("en-GB", { timeZone: "Asia/Hong_Kong", hour: "2-digit", minute: "2-digit" });
+    $("clock").textContent = s;
+  }
+
+  $("refresh").addEventListener("click", load);
+  tick(); setInterval(tick, 15000);
+  // Show the page frame at once and start the 3D map alongside the weather data, instead of after it.
+  $("state").hidden = true; $("content").hidden = false;
+  initMap();
+  load(); setInterval(load, REFRESH_MS);
+})();
+</script>
+</body>
+</html>
