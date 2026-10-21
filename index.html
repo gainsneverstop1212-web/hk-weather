@@ -162,7 +162,12 @@ section.block { margin-block: 36px; }
 .map-legend { position: absolute; left: 14px; bottom: 14px; z-index: 2; background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 10px 12px; color: #C9D6E0; font-size: 12px; display: grid; gap: 6px; min-width: 180px; backdrop-filter: blur(6px); }
 .map-legend .ramp { height: 6px; border-radius: 3px; }
 .map-legend .ends { display: flex; justify-content: space-between; font-family: var(--data); }
-.map-credit { margin-top: 8px; font-size: 12px; color: var(--ink-2); }
+.map-credit { margin-top: 4px; font-size: 12px; color: var(--ink-3); }
+.map-help { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-2); }
+.map-help b { font-weight: 500; color: var(--ink); margin-right: 4px; }
+#compassNeedle { transition: transform .15s linear; }
+#map3d canvas { cursor: grab; }
+#map3d canvas:active { cursor: grabbing; }
 .map-zoom { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); z-index: 2; display: grid; background: rgba(9, 20, 31, .78); border: 1px solid rgba(255,255,255,.14); border-radius: 10px; overflow: hidden; backdrop-filter: blur(6px); }
 .map-zoom button { width: 40px; height: 40px; display: grid; place-items: center; background: transparent; border: 0; color: #E6ECF1; cursor: pointer; }
 .map-zoom button + button { border-top: 1px solid rgba(255,255,255,.14); }
@@ -257,11 +262,15 @@ footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify
           <button type="button" class="map-reset" id="mapFull" aria-pressed="false">全螢幕</button>
         </div>
         <div class="map-zoom">
+          <button type="button" id="compass" aria-label="指向正北" title="指向正北"><svg viewBox="0 0 16 16" aria-hidden="true" id="compassNeedle"><path d="M8 1.5 10.5 8H5.5z" fill="#E07A4F" stroke="none"/><path d="M8 14.5 5.5 8h5z" fill="currentColor" stroke="none" opacity=".55"/></svg></button>
           <button type="button" id="zoomIn" aria-label="放大" title="放大"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg></button>
           <button type="button" id="zoomOut" aria-label="縮小" title="縮小"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10"/></svg></button>
         </div>
         <div class="map-legend" id="mapLegend"></div>
         <div class="map-cover" id="mapCover">載入中</div>
+      </div>
+      <div class="map-help">
+        <span><b>左鍵拖動</b>移動</span><span><b>右鍵拖動</b>或<b>Ctrl＋拖動</b>旋轉及傾斜</span><span><b>滾輪</b>縮放</span><span><b>雙擊</b>放大</span>
       </div>
       <div class="map-credit">地圖資料：香港特別行政區政府地政總署</div>
     </section>
@@ -501,7 +510,9 @@ footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify
     "西貢": [22.3830, 114.2700], "離島區": [22.2640, 113.9600]
   };
   const HOME = { lon: 114.168, lat: 22.248, h: 2300, heading: -5, pitch: -30 };
-  const MIN_ZOOM = 80, MAX_ZOOM = 90000;
+  const MIN_ZOOM = 150, MAX_ZOOM = 30000;
+  // Camera must stay over Hong Kong: [west, south, east, north] in degrees, plus a height ceiling in metres.
+  const HK_BOUNDS = [113.90, 22.19, 114.34, 22.50], MAX_HEIGHT = 25000, MAX_PITCH = -20, MIN_HEIGHT = 150;
   const RAMP_T = ["#5FA8D3", "#E9B44C", "#D9643A"];
   const RAMP_R = ["#9CC3E6", "#2E6FB0"];
   let viewer = null, mapState = "idle", mapLayer = "temp", lastRhr = null;
@@ -595,6 +606,52 @@ footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify
       ctl.minimumZoomDistance = MIN_ZOOM;
       ctl.maximumZoomDistance = MAX_ZOOM;
       ctl.inertiaSpin = 0.85; ctl.inertiaTranslate = 0.85; ctl.inertiaZoom = 0.75;
+      // Mouse scheme close to Google Earth: left drag moves, right drag (or Ctrl/Shift + left drag) rotates and tilts,
+      // middle drag tilts, wheel and pinch zoom toward the pointer.
+      const ET = C.CameraEventType, KM = C.KeyboardEventModifier;
+      ctl.rotateEventTypes = [ET.LEFT_DRAG];
+      ctl.tiltEventTypes = [ET.RIGHT_DRAG, ET.MIDDLE_DRAG, ET.PINCH,
+        { eventType: ET.LEFT_DRAG, modifier: KM.CTRL }, { eventType: ET.LEFT_DRAG, modifier: KM.SHIFT }];
+      ctl.zoomEventTypes = [ET.WHEEL, ET.PINCH];
+      ctl.lookEventTypes = [];
+      ctl.enableCollisionDetection = true;
+      viewer.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+      // Constraints, checked every frame:
+      // 1. the camera never tilts above MAX_PITCH (no near-horizon views) and stays between MIN_HEIGHT and MAX_HEIGHT;
+      // 2. the ground point at the centre of the screen always stays inside Hong Kong (as on Google Maps),
+      //    so dragging or zooming out can never leave Hong Kong behind.
+      const clampDeg = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+      const scratchCenter = new C.Cartesian2();
+      const tiles = {};
+      sc.preRender.addEventListener(() => {
+        const cam = viewer.camera, c = cam.positionCartographic;
+        // The higher the camera, the closer to straight down it must look, so a zoomed-out view never reaches past Hong Kong.
+        const f = clampDeg((c.height - 3000) / (20000 - 3000), 0, 1);
+        const maxPitch = C.Math.toRadians(MAX_PITCH + (-55 - MAX_PITCH) * f);
+        const h = clampDeg(c.height, MIN_HEIGHT, MAX_HEIGHT);
+        if (h !== c.height || cam.pitch > maxPitch) {
+          cam.setView({ destination: C.Cartesian3.fromRadians(c.longitude, c.latitude, h),
+            orientation: { heading: cam.heading, pitch: Math.min(cam.pitch, maxPitch), roll: 0 } });
+        }
+        // From high up the aerial photo alone looks cleaner and loads faster; 3D terrain and buildings join below 6 km.
+        const near = cam.positionCartographic.height < 6000;
+        if (tiles.terrain && tiles.terrain.show !== near) { tiles.terrain.show = near; tiles.bld.show = near; }
+        scratchCenter.x = viewer.canvas.clientWidth / 2; scratchCenter.y = viewer.canvas.clientHeight / 2;
+        const center = cam.pickEllipsoid(scratchCenter, sc.globe.ellipsoid);
+        if (!center) return;
+        const cc = C.Cartographic.fromCartesian(center);
+        const lon = C.Math.toDegrees(cc.longitude), lat = C.Math.toDegrees(cc.latitude);
+        const cl = clampDeg(lon, HK_BOUNDS[0], HK_BOUNDS[2]), ct = clampDeg(lat, HK_BOUNDS[1], HK_BOUNDS[3]);
+        if (cl !== lon || ct !== lat) {
+          const shift = C.Cartesian3.subtract(C.Cartesian3.fromDegrees(cl, ct, 0), center, new C.Cartesian3());
+          cam.position = C.Cartesian3.add(cam.position, shift, new C.Cartesian3());
+        }
+      });
+      // Compass: shows where north is; clicking it turns the view back to north.
+      viewer.camera.changed.addEventListener(() => {
+        $("compassNeedle").style.transform = "rotate(" + (-C.Math.toDegrees(viewer.camera.heading)) + "deg)";
+      });
+      viewer.camera.percentageChanged = 0.01;
       // Double-click zooms in toward the clicked point, as on Google Maps.
       const handler = viewer.cesiumWidget.screenSpaceEventHandler;
       handler.removeInputAction(C.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
@@ -621,13 +678,16 @@ footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify
       sc.primitives.add(terrain);
       bld.style = new C.Cesium3DTileStyle({ color: "color('#F2F5F7')" });
       sc.primitives.add(bld);
+      terrain.enableCollision = true; bld.enableCollision = true;
+      tiles.terrain = terrain; tiles.bld = bld;
       // Redraw whenever tiles arrive, and keep drawing until the view has finished loading.
       [terrain, bld].forEach((ts) => {
         ts.loadProgress.addEventListener(() => sc.requestRender());
         ts.tileLoad.addEventListener(() => sc.requestRender());
       });
       sc.postRender.addEventListener(() => {
-        if (!terrain.tilesLoaded || !bld.tilesLoaded) requestAnimationFrame(() => sc.requestRender());
+        const busyTiles = terrain.show && (!terrain.tilesLoaded || !bld.tilesLoaded);
+        if (busyTiles || !sc.globe.tilesLoaded) requestAnimationFrame(() => sc.requestRender());
       });
       goHome(false);
       // Show the map as soon as the first ground tiles arrive; buildings keep streaming in afterwards.
@@ -712,6 +772,14 @@ footer .wrap { padding-block: 22px 30px; display: flex; flex-wrap: wrap; justify
   $("layerTemp").addEventListener("click", () => setLayer("temp"));
   $("layerRain").addEventListener("click", () => setLayer("rain"));
   $("mapReset").addEventListener("click", () => { if (viewer) goHome(true); });
+  $("compass").addEventListener("click", () => {
+    if (!viewer) return;
+    const C = window.Cesium, cam = viewer.camera, cv = viewer.canvas;
+    const target = focusPoint(new C.Cartesian2(cv.clientWidth / 2, cv.clientHeight / 2));
+    if (!target) { cam.flyTo({ destination: cam.positionWC, orientation: { heading: 0, pitch: cam.pitch, roll: 0 }, duration: 0.6 }); return; }
+    const range = C.Cartesian3.distance(cam.positionWC, target);
+    cam.flyToBoundingSphere(new C.BoundingSphere(target, 0), { offset: new C.HeadingPitchRange(0, cam.pitch, range), duration: 0.6 });
+  });
   $("zoomIn").addEventListener("click", () => zoomCenter(0.5));
   $("zoomOut").addEventListener("click", () => zoomCenter(-1));
   $("mapFull").addEventListener("click", () => setFull(!document.querySelector(".map-shell").classList.contains("full")));
